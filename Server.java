@@ -1,59 +1,66 @@
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
 
 public class Server {
+
+    // Credenciales fijas a nivel de constante
+    private static final String USER = "admin";
+    private static final String PASSWORD = "admin";
+
     public static void main(String[] args) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
 
-        // 1. Ruta principal: sirve el index.html
+        // 1. Ruta principal: sirve index.html
         server.createContext("/", exchange -> {
-            Path archivo = Paths.get("index.html");
-            if (Files.exists(archivo)) {
-                byte[] contenido = Files.readAllBytes(archivo);
-                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
-                exchange.sendResponseHeaders(200, contenido.length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(contenido);
-                }
+            if ("/".equals(exchange.getRequestURI().getPath())) {
+                servirArchivo(exchange, "index.html");
             } else {
-                byte[] error = "404 - No se encontró index.html".getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(404, error.length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(error);
+                try (exchange) {
+                    exchange.sendResponseHeaders(404, -1);
                 }
             }
         });
 
-        // 2. NUEVA RUTA: recibe el submit del formulario en /login
+        // 2. Nueva ruta: sirve home.html (ignora automáticamente los parámetros ?usuario=...)
+        server.createContext("/home.html", exchange -> {
+            servirArchivo(exchange, "home.html");
+        });
+
+        // 3. Procesamiento del login y redirección
         server.createContext("/login", exchange -> {
             try (exchange) {
                 if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                    // Leemos los bytes enviados por el formulario
-                    byte[] datosCrudos = exchange.getRequestBody().readAllBytes();
-                    String cuerpo = new String(datosCrudos, StandardCharsets.UTF_8);
+                    String cuerpo = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                    Map<String, String> datos = parsearFormulario(cuerpo);
                     
-                    // Decodificamos formato URL (ej: usuario=juan%40mail.com&password=123)
-                    String datosDecodificados = URLDecoder.decode(cuerpo, StandardCharsets.UTF_8);
+                    String usuarioRecibido = datos.getOrDefault("usuario", "");
+                    String passwordRecibido = datos.getOrDefault("password", "");
                     
-                    // Imprimimos en la consola del servidor
-                    System.out.println("=== Nuevo Submit Recibido ===");
-                    System.out.println("Crudo: " + cuerpo);
-                    for (String parametro : datosDecodificados.split("&")) {
-                        System.out.println(" -> " + parametro);
+                    System.out.println("Intento de login -> Usuario: " + usuarioRecibido + " | Password: " + passwordRecibido);
+                    
+                    if (USER.equals(usuarioRecibido) && PASSWORD.equals(passwordRecibido)) {
+                        // Login correcto: redirigimos a home.html pasando el usuario por query param
+                        String usuarioUrl = URLEncoder.encode(usuarioRecibido, StandardCharsets.UTF_8);
+                        exchange.getResponseHeaders().set("Location", "/home.html?usuario=" + usuarioUrl);
+                        exchange.sendResponseHeaders(302, -1);
+                    } else {
+                        // Login incorrecto: devolvemos al login con indicador de error
+                        System.out.println("Credenciales incorrectas.");
+                        exchange.getResponseHeaders().set("Location", "/?error=1");
+                        exchange.sendResponseHeaders(302, -1);
                     }
-                    
-                    // Redirigimos de vuelta al inicio (/) para completar el ciclo HTTP
-                    exchange.getResponseHeaders().set("Location", "/");
-                    exchange.sendResponseHeaders(302, -1);
                 } else {
-                    // Si alguien entra a /login por GET, devolvemos Method Not Allowed
                     exchange.sendResponseHeaders(405, -1);
                 }
             }
@@ -62,5 +69,40 @@ public class Server {
         server.setExecutor(null);
         server.start();
         System.out.println("Servidor iniciado en http://localhost:8080");
+    }
+
+    // Método auxiliar para enviar archivos HTML
+    private static void servirArchivo(HttpExchange exchange, String nombreArchivo) throws IOException {
+        try (exchange) {
+            Path archivo = Paths.get(nombreArchivo);
+            if (Files.exists(archivo)) {
+                byte[] contenido = Files.readAllBytes(archivo);
+                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+                exchange.sendResponseHeaders(200, contenido.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(contenido);
+                }
+            } else {
+                byte[] error = ("404 - No se encontró " + nombreArchivo).getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(404, error.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(error);
+                }
+            }
+        }
+    }
+
+    // Convierte "usuario=admin&password=admin" en un Map<String, String> decodificado
+    private static Map<String, String> parsearFormulario(String cuerpo) {
+        Map<String, String> parametros = new HashMap<>();
+        if (cuerpo == null || cuerpo.isEmpty()) return parametros;
+
+        for (String par : cuerpo.split("&")) {
+            String[] kv = par.split("=", 2);
+            String clave = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
+            String valor = kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "";
+            parametros.put(clave, valor);
+        }
+        return parametros;
     }
 }
